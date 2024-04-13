@@ -13,9 +13,11 @@ SED = sed
 GREP = grep
 CUT = cut
 
-VERSION != $(GREP) VERSION main.h | $(CUT) -d \" -f2
-PROGNAME != $(GREP) PROGNAME main.h | $(CUT) -d \" -f2
-PROGUPPER != $(GREP) PROGUPPER main.h | $(CUT) -d \" -f2
+MAIN_HEADER := include/main.h
+
+VERSION != $(GREP) VERSION $(MAIN_HEADER) | $(CUT) -d \" -f2
+PROGNAME != $(GREP) PROGNAME $(MAIN_HEADER) | $(CUT) -d \" -f2
+PROGUPPER != $(GREP) PROGUPPER $(MAIN_HEADER) | $(CUT) -d \" -f2
 
 PREFIX = /usr/local
 
@@ -25,6 +27,7 @@ MANPREFIX.=/usr/share/man
 MANPREFIX=$(MANPREFIX.$(PREFIX))
 
 INCLUDES != pkg-config --cflags libnotify
+INCLUDES := $(INCLUDES) -I./include/
 CFLAGS_EXTRA = -pedantic -Wall -Wextra -Werror -Wno-unused-parameter -Os
 CFLAGS := $(CFLAGS_EXTRA) $(INCLUDES) $(CFLAGS)
 
@@ -33,9 +36,9 @@ LIBS := $(LIBS) -lm
 LDFLAGS_EXTRA = -s
 LDFLAGS := $(LDFLAGS_EXTRA) $(LDFLAGS)
 
-SRC = main.c options.c battery.c notify.c
+SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
-HDR = $(SRC:.c=.h)
+HDR = include/*.h
 
 .PHONY: all install install-service clean test compile-test
 
@@ -46,7 +49,7 @@ $(TARGET): $(OBJ)
 
 %.o: $(HDR)
 
-$(TARGET).1: $(TARGET).1.in main.h
+$(TARGET).1: $(TARGET).1.in $(MAIN_HEADER)
 	$(SED) "s/VERSION/$(VERSION)/g" < $(TARGET).1.in | $(SED) "s/PROGNAME/$(PROGNAME)/g" | $(SED) "s/PROGUPPER/$(PROGUPPER)/g" > $@
 
 install: all

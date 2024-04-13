@@ -65,6 +65,14 @@ Authors
 batsignal is written by Corey Hinshaw. It was originally forked from juiced by
 Aaron Marcher.
 
+Development Notes
+-----------------
+
+For supporting language-server freatures, the  `compile_commands.json` file is necessary (at least for the clangd-lsp).
+This can be generated with [Bear](https://github.com/rizsotto/Bear):
+
+    $ bear -- make
+
 License and Copyright
 ---------------------
 Copyright (c) 2018-2024 Corey Hinshaw  
