@@ -2,18 +2,25 @@
  * Copyright (c) 2018-2024 Corey Hinshaw
  */
 
+#include "battery.h"
 #include <pthread.h>
-#include <time.h>
+#include <atomic_ops.h>
+#include <sys/signal.h>
 #include <dirent.h>
+#include <sys/types.h>
 #include <err.h>
 #include <errno.h>
-#include <sys/inotify.h>
 #include <math.h>
+#include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
+#include <time.h>
 #include <unistd.h>
-#include "battery.h"
+
+#define INOTIFY_BUF_SIZE 4096
 
 static char *attr_path = NULL;
 
@@ -112,45 +119,149 @@ int find_batteries(char ***battery_names)
   return battery_count;
 }
 
-BatteryState init_batteries(char **battery_names, int battery_count) {
-  BatteryState battery;
-  battery.names = battery_names;
-  battery.count = battery_count;
+struct BatteryStateWrapper {
+  BatteryState *battery;
+  int bat_id;
+};
+
+void *watch_for_file_changes(void *battery) {
+  struct BatteryStateWrapper *bat = battery;
+  char buf[INOTIFY_BUF_SIZE];
+  while (bat->battery->watching) {
+    // blocks here, until the watched file changes or a signal is send to the thread
+    printf("Waiting for filechange\n");
+    int len = read(bat->battery->watch_fds[bat->bat_id],&buf,sizeof(buf));
+
+    // error while reading -> signal was send to stop or IO-Error
+    if (len==-1) {
+      switch (errno) {
+        case EINTR:
+          pthread_cond_broadcast(bat->battery->bat_state_change);
+          printf("Thread stopped\n");
+          return NULL;
+        default:{
+          perror("Unexpected Error in inotify thread");
+          printf("Thread stopped\n");
+          return NULL;
+        }
+      }
+    }
+
+    // file changed, update request with conditional variable
+    pthread_cond_signal(bat->battery->bat_state_change);
+  }
+  printf("Thread stopped\n");
+  return NULL;
+}
+
+void inotify_sig_handler(int sig, siginfo_t *_, void *__) {
+  printf("Received signal to stop inotify threads, stopping now\n");
+}
+
+BatteryState *init_batteries(char **battery_names, int battery_count) {
+  BatteryState *battery;
+  battery = calloc(1, sizeof(*battery));
+  battery->names = battery_names;
+  battery->count = battery_count;
+  battery->bat_state_change = calloc(1, sizeof(*battery->bat_state_change));
+  battery->state_change_mut = calloc(1, sizeof(*battery->state_change_mut));
+  if (battery->bat_state_change == NULL || battery->state_change_mut == NULL) {
+    perror("Error on initialising conditional var");
+    return battery;
+  }
 
   // initialise conditional variable and mutex
   // for battery charging state changes on all batteries
-  pthread_cond_init(battery.bat_state_change, NULL);
-  pthread_mutex_init(battery.state_change_mut, NULL);
+  pthread_cond_init(battery->bat_state_change, NULL);
+  pthread_mutex_init(battery->state_change_mut, NULL);
+  battery->watching = calloc(1, sizeof(*battery->watching));
+  if (battery->watching == NULL) {
+    perror("Error on initialising atomic variable for inotify");
+    return battery;
+  }
+  *battery->watching = ATOMIC_VAR_INIT(true);
 
   // init inotify-fd for notification on battery charging state changes
-  battery.inotify_fd = inotify_init1(IN_NONBLOCK);
-  if (battery.inotify_fd==-1) {
+  battery->inotify_fd = inotify_init1(IN_NONBLOCK);
+  if (battery->inotify_fd == -1) {
     perror("Error on initialising inotify");
     return battery;
   }
-  battery.watch_fds = calloc(battery_count, sizeof(int));
-  if (battery.watch_fds==NULL) {
+  battery->watch_fds = calloc(battery_count, sizeof(int));
+  if (battery->watch_fds == NULL) {
     perror("Error while creating memory for inotify watch fds");
     return battery;
   }
 
+  // use sigaction to mask the signal which should be used
+  // for cancel the threads created below
+  struct sigaction sa;
+  sa.sa_sigaction = &inotify_sig_handler;
+
+  if (sigaction(SIGUSR2, &sa, NULL) != 0) {
+    perror("Error while registering the signal handler for inotify");
+    return battery;
+  }
+
+  battery->thread_ids = calloc(battery->count, sizeof(*battery->thread_ids));
+  if (battery->thread_ids == NULL) {
+    perror("Error while creating memory for inotify thread infos");
+    return battery;
+  }
+
   // add watch fds for file modifications for each battery charge state file
-  for (int i = 0; i<battery.count; i++) {
-    sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/status", battery.names[i]);
-    battery.watch_fds[i] = inotify_add_watch(battery.inotify_fd, attr_path, IN_MODIFY);
-    if (battery.watch_fds[i]==-1) {
-      fprintf(stderr, "Cannot watch '%s': %s\n",attr_path, strerror(errno));
+  for (int i = 0; i < battery->count; i++) {
+    sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/status", battery->names[i]);
+    battery->watch_fds[i] =
+        inotify_add_watch(battery->inotify_fd, attr_path, IN_MODIFY);
+    if (battery->watch_fds[i] == -1) {
+      fprintf(stderr, "Cannot watch '%s': %s\n", attr_path, strerror(errno));
       continue;
     }
 
+    struct BatteryStateWrapper *b_state = calloc(1, sizeof(struct BatteryStateWrapper));
+    if (b_state == NULL) {
+      perror("Error while creating memory for battery-state wrapper");
+      continue;
+    }
+    b_state->battery = battery;
+    b_state->bat_id = i;
+
     // start a thread polling the watch_fd
+    int ret = pthread_create(&battery->thread_ids[i], NULL,
+                             &watch_for_file_changes, b_state);
+    if (ret != 0) {
+      printf("Couldn't start the inotify thread for %s\n", battery->names[i]);
+    }
   }
 
   return battery;
 }
 
 void uninit_batteries(BatteryState *battery) {
+  if (battery->inotify_fd != -1) {
+    //stopping threads
+    battery->watching = false;
+    if (battery->thread_ids!=NULL) {
+      for (int i = 0; i<battery->count; i++) {
+        printf("Stopping threads\n");
+        pthread_kill(battery->thread_ids[i], SIGUSR2);
+        pthread_join(battery->thread_ids[i], NULL);
+      }
+    }
+    pthread_cond_broadcast(battery->bat_state_change);
 
+    // close watch fds
+    if (battery->watch_fds != NULL) {
+      for (int i = 0; i < battery->count; i++) {
+        if (battery->watch_fds[i] != -1) {
+          close(battery->watch_fds[i]);
+        }
+      }
+      // stop inotify
+      close(battery->inotify_fd);
+    }
+  }
 }
 
 int validate_batteries(char **battery_names, int battery_count)
@@ -175,13 +286,15 @@ int validate_batteries(char **battery_names, int battery_count)
   return return_value;
 }
 
-void wait_for_update_battery_state(BatteryState *battery, bool required)
+void wait_for_update_battery_state(BatteryState *battery, bool required,
+                                   struct timespec timeout)
 {
   char state[15];
   char *now_attribute;
   char *full_attribute;
   unsigned int tmp_now;
   unsigned int tmp_full;
+  struct timespec ts;
   FILE *file;
 
   battery->discharging = false;
@@ -189,6 +302,14 @@ void wait_for_update_battery_state(BatteryState *battery, bool required)
   battery->energy_now = 0;
   battery->energy_full = 0;
   set_attributes(battery->names[0], &now_attribute, &full_attribute);
+
+  //wait for changes on the state files or for timeout
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec += timeout.tv_sec;
+  ts.tv_nsec += timeout.tv_nsec;
+  pthread_mutex_lock(battery->state_change_mut);
+  pthread_cond_timedwait(battery->bat_state_change, battery->state_change_mut, &ts);
+  pthread_mutex_unlock(battery->state_change_mut);
 
   /* iterate through all batteries */
   for (int i = 0; i < battery->count; i++) {

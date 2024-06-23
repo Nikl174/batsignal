@@ -28,7 +28,7 @@
 #include "notify.h"
 #include "options.h"
 
-BatteryState battery;
+BatteryState *battery;
 
 void print_version(void)
 {
@@ -82,8 +82,8 @@ void cleanup(void)
   if (notify_is_initted()) {
     notify_uninit();
   }
-  if (battery.inotify_fd!=-1) {
-    uninit_batteries(&battery);
+  if (battery->inotify_fd!=-1) {
+    uninit_batteries(battery);
   }
 }
 
@@ -98,10 +98,15 @@ int main(int argc, char *argv[])
   bool previous_discharging_status;
   sigset_t sigs;
   struct timespec timeout = { .tv_sec = 0 };
+  struct timespec time_0 = {0,0};
   int bat_index;
   char *config_file = NULL;
   int conf_argc = 0;
   char **conf_argv;
+  battery = calloc(1, sizeof(*battery));
+  if (battery==NULL) {
+    err(EXIT_FAILURE, "Failed to allocate memory for battery struct");
+  }
 
   Config config = {
     .daemonize = false,
@@ -180,70 +185,67 @@ int main(int argc, char *argv[])
     err(EXIT_FAILURE, "Failed to daemonize");
   }
 
-  battery.names = config.battery_names;
-  battery.count = config.battery_count;
   battery = init_batteries(config.battery_names, config.battery_count);
-  wait_for_update_battery_state(&battery, config.battery_required);
+  wait_for_update_battery_state(battery, config.battery_required, timeout);
 
   for(;;) {
-    previous_discharging_status = battery.discharging;
-    wait_for_update_battery_state(&battery, config.battery_required);
+    previous_discharging_status = battery->discharging;
     duration = config.multiplier;
 
-    if (battery.discharging) { /* discharging */
-      if (config.danger && battery.level <= config.danger) {
-        if (battery.state != STATE_DANGER) {
-          battery.state = STATE_DANGER;
+    if (battery->discharging) { /* discharging */
+      if (config.danger && battery->level <= config.danger) {
+        if (battery->state != STATE_DANGER) {
+          battery->state = STATE_DANGER;
           if (config.dangercmd[0] != '\0')
             if (system(config.dangercmd) == -1) { /* Ignore command errors... */ }
         }
 
-      } else if (config.critical && battery.level <= config.critical) {
-        if (battery.state != STATE_CRITICAL) {
-          battery.state = STATE_CRITICAL;
-          notify(config.criticalmsg, NOTIFY_URGENCY_CRITICAL, battery);
+      } else if (config.critical && battery->level <= config.critical) {
+        if (battery->state != STATE_CRITICAL) {
+          battery->state = STATE_CRITICAL;
+          notify(config.criticalmsg, NOTIFY_URGENCY_CRITICAL, *battery);
         }
 
-      } else if (config.warning && battery.level <= config.warning) {
+      } else if (config.warning && battery->level <= config.warning) {
         if (!config.fixed)
-          duration = (battery.level - config.critical) * config.multiplier;
+          duration = (battery->level - config.critical) * config.multiplier;
 
-        if (battery.state != STATE_WARNING) {
-          battery.state = STATE_WARNING;
-          notify(config.warningmsg, NOTIFY_URGENCY_NORMAL, battery);
+        if (battery->state != STATE_WARNING) {
+          battery->state = STATE_WARNING;
+          notify(config.warningmsg, NOTIFY_URGENCY_NORMAL, *battery);
         }
 
       } else {
-        if (config.show_charging_msg && battery.discharging != previous_discharging_status) {
-          notify(config.dischargingmsg, NOTIFY_URGENCY_NORMAL, battery);
-        } else if (battery.state == STATE_FULL) {
+        if (config.show_charging_msg && battery->discharging != previous_discharging_status) {
+          notify(config.dischargingmsg, NOTIFY_URGENCY_NORMAL, *battery);
+        } else if (battery->state == STATE_FULL) {
           close_notification();
         }
-        battery.state = STATE_DISCHARGING;
+        battery->state = STATE_DISCHARGING;
         if (!config.fixed)
-          duration = (battery.level - config.warning) * config.multiplier;
+          duration = (battery->level - config.warning) * config.multiplier;
       }
 
     } else { /* charging */
-      if ((config.full && battery.state != STATE_FULL) && (battery.level >= config.full || battery.full)) {
-        battery.state = STATE_FULL;
-        notify(config.fullmsg, NOTIFY_URGENCY_NORMAL, battery);
+      if ((config.full && battery->state != STATE_FULL) && (battery->level >= config.full || battery->full)) {
+        battery->state = STATE_FULL;
+        notify(config.fullmsg, NOTIFY_URGENCY_NORMAL, *battery);
 
-      } else if (config.show_charging_msg && battery.discharging != previous_discharging_status) {
-        battery.state = STATE_AC;
-        notify(config.chargingmsg, NOTIFY_URGENCY_NORMAL, battery);
+      } else if (config.show_charging_msg && battery->discharging != previous_discharging_status) {
+        battery->state = STATE_AC;
+        notify(config.chargingmsg, NOTIFY_URGENCY_NORMAL, *battery);
 
       } else {
-        battery.state = STATE_AC;
+        battery->state = STATE_AC;
         close_notification();
       }
     }
 
     if (config.multiplier == 0) {
-      sigwaitinfo(&sigs, NULL);
+      wait_for_update_battery_state(battery, config.battery_required, time_0);
     } else {
       timeout.tv_sec = duration;
-      sigtimedwait(&sigs, NULL, &timeout);
+      wait_for_update_battery_state(battery, config.battery_required, timeout);
     }
 
     if (config.run_once) break;

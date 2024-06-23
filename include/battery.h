@@ -5,7 +5,8 @@
 #ifndef BATTERY_H
 #define BATTERY_H
 
-#include <bits/pthreadtypes.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <time.h>
 
@@ -40,12 +41,14 @@ typedef struct BatteryState {
   int *watch_fds;
   pthread_cond_t *bat_state_change;
   pthread_mutex_t *state_change_mut;
+  pthread_t *thread_ids;
+  atomic_bool *watching;
 } BatteryState;
 
-BatteryState init_batteries(char **battery_names, int battery_count);
+BatteryState* init_batteries(char **battery_names, int battery_count);
 void uninit_batteries(BatteryState * battery);
 int find_batteries(char ***battery_names);
 int validate_batteries(char **battery_names, int battery_count);
-void wait_for_update_battery_state(BatteryState *battery, bool required);
+void wait_for_update_battery_state(BatteryState *battery, bool required, struct timespec timeout);
 
 #endif
