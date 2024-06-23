@@ -28,12 +28,14 @@
 #include "notify.h"
 #include "options.h"
 
-void print_version()
+BatteryState battery;
+
+void print_version(void)
 {
   printf("%s %s\n", PROGNAME, VERSION);
 }
 
-void print_help()
+void print_help(void)
 {
   printf("Usage: %s [OPTIONS]\n\
 \n\
@@ -75,14 +77,17 @@ Options:\n\
 ", PROGNAME, PROGNAME);
 }
 
-void cleanup()
+void cleanup(void)
 {
   if (notify_is_initted()) {
     notify_uninit();
   }
+  if (battery.inotify_fd!=-1) {
+    uninit_batteries(&battery);
+  }
 }
 
-void signal_handler()
+void signal_handler(int _)
 {
   exit(EXIT_SUCCESS);
 }
@@ -94,7 +99,6 @@ int main(int argc, char *argv[])
   sigset_t sigs;
   struct timespec timeout = { .tv_sec = 0 };
   int bat_index;
-  BatteryState battery;
   char *config_file = NULL;
   int conf_argc = 0;
   char **conf_argv;
@@ -178,11 +182,12 @@ int main(int argc, char *argv[])
 
   battery.names = config.battery_names;
   battery.count = config.battery_count;
-  update_battery_state(&battery, config.battery_required);
+  battery = init_batteries(config.battery_names, config.battery_count);
+  wait_for_update_battery_state(&battery, config.battery_required);
 
   for(;;) {
     previous_discharging_status = battery.discharging;
-    update_battery_state(&battery, config.battery_required);
+    wait_for_update_battery_state(&battery, config.battery_required);
     duration = config.multiplier;
 
     if (battery.discharging) { /* discharging */

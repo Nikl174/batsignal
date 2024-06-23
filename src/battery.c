@@ -2,10 +2,12 @@
  * Copyright (c) 2018-2024 Corey Hinshaw
  */
 
-#define _DEFAULT_SOURCE
+#include <pthread.h>
+#include <time.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <sys/inotify.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,6 +112,47 @@ int find_batteries(char ***battery_names)
   return battery_count;
 }
 
+BatteryState init_batteries(char **battery_names, int battery_count) {
+  BatteryState battery;
+  battery.names = battery_names;
+  battery.count = battery_count;
+
+  // initialise conditional variable and mutex
+  // for battery charging state changes on all batteries
+  pthread_cond_init(battery.bat_state_change, NULL);
+  pthread_mutex_init(battery.state_change_mut, NULL);
+
+  // init inotify-fd for notification on battery charging state changes
+  battery.inotify_fd = inotify_init1(IN_NONBLOCK);
+  if (battery.inotify_fd==-1) {
+    perror("Error on initialising inotify");
+    return battery;
+  }
+  battery.watch_fds = calloc(battery_count, sizeof(int));
+  if (battery.watch_fds==NULL) {
+    perror("Error while creating memory for inotify watch fds");
+    return battery;
+  }
+
+  // add watch fds for file modifications for each battery charge state file
+  for (int i = 0; i<battery.count; i++) {
+    sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/status", battery.names[i]);
+    battery.watch_fds[i] = inotify_add_watch(battery.inotify_fd, attr_path, IN_MODIFY);
+    if (battery.watch_fds[i]==-1) {
+      fprintf(stderr, "Cannot watch '%s': %s\n",attr_path, strerror(errno));
+      continue;
+    }
+
+    // start a thread polling the watch_fd
+  }
+
+  return battery;
+}
+
+void uninit_batteries(BatteryState *battery) {
+
+}
+
 int validate_batteries(char **battery_names, int battery_count)
 {
   unsigned int path_len = strlen(POWER_SUPPLY_SUBSYSTEM) + POWER_SUPPLY_ATTR_LENGTH;
@@ -132,7 +175,7 @@ int validate_batteries(char **battery_names, int battery_count)
   return return_value;
 }
 
-void update_battery_state(BatteryState *battery, bool required)
+void wait_for_update_battery_state(BatteryState *battery, bool required)
 {
   char state[15];
   char *now_attribute;
