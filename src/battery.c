@@ -134,17 +134,9 @@ void *watch_for_file_changes(void *battery) {
 
     // error while reading -> signal was send to stop or IO-Error
     if (len==-1) {
-      switch (errno) {
-        case EINTR:
-          pthread_cond_broadcast(bat->battery->bat_state_change);
-          printf("Thread stopped\n");
-          return NULL;
-        default:{
           perror("Unexpected Error in inotify thread");
           printf("Thread stopped\n");
           return NULL;
-        }
-      }
     }
 
     // file changed, update request with conditional variable
@@ -152,10 +144,6 @@ void *watch_for_file_changes(void *battery) {
   }
   printf("Thread stopped\n");
   return NULL;
-}
-
-void inotify_sig_handler(int sig, siginfo_t *_, void *__) {
-  printf("Received signal to stop inotify threads, stopping now\n");
 }
 
 BatteryState *init_batteries(char **battery_names, int battery_count) {
@@ -193,15 +181,6 @@ BatteryState *init_batteries(char **battery_names, int battery_count) {
     return battery;
   }
 
-  // use sigaction to mask the signal which should be used
-  // for cancel the threads created below
-  struct sigaction sa;
-  sa.sa_sigaction = &inotify_sig_handler;
-
-  if (sigaction(SIGUSR2, &sa, NULL) != 0) {
-    perror("Error while registering the signal handler for inotify");
-    return battery;
-  }
 
   battery->thread_ids = calloc(battery->count, sizeof(*battery->thread_ids));
   if (battery->thread_ids == NULL) {
@@ -244,8 +223,7 @@ void uninit_batteries(BatteryState *battery) {
     battery->watching = false;
     if (battery->thread_ids!=NULL) {
       for (int i = 0; i<battery->count; i++) {
-        printf("Stopping threads\n");
-        pthread_kill(battery->thread_ids[i], SIGUSR2);
+        pthread_cancel(battery->thread_ids[i]);
         pthread_join(battery->thread_ids[i], NULL);
       }
     }
