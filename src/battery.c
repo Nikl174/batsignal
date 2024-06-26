@@ -3,20 +3,20 @@
  */
 
 #include "battery.h"
-#include <pthread.h>
 #include <atomic_ops.h>
-#include <sys/signal.h>
 #include <dirent.h>
-#include <sys/types.h>
 #include <err.h>
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/signal.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -24,8 +24,8 @@
 
 static char *attr_path = NULL;
 
-static void set_attributes(char *battery_name, char **now_attribute, char **full_attribute)
-{
+static void set_attributes(char *battery_name, char **now_attribute,
+                           char **full_attribute) {
   sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/charge_now", battery_name);
   if (access(attr_path, F_OK) == 0) {
     *now_attribute = "charge_now";
@@ -42,22 +42,21 @@ static void set_attributes(char *battery_name, char **now_attribute, char **full
   }
 }
 
-static bool is_type_battery(char *name)
-{
+static bool is_type_battery(char *name) {
   FILE *file;
   char type[11] = "";
 
   sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/type", name);
   file = fopen(attr_path, "r");
   if (file != NULL) {
-    if (fscanf(file, "%10s", type) == 0) { /* Continue... */ }
+    if (fscanf(file, "%10s", type) == 0) { /* Continue... */
+    }
     fclose(file);
   }
   return strcmp(type, "Battery") == 0;
 }
 
-static bool has_capacity_field(char *name)
-{
+static bool has_capacity_field(char *name) {
   FILE *file;
   int capacity = -1;
   char *now_attribute;
@@ -69,7 +68,8 @@ static bool has_capacity_field(char *name)
     sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/capacity", name);
     file = fopen(attr_path, "r");
     if (file != NULL) {
-      if (fscanf(file, "%d", &capacity) == 0) { /* Continue... */ }
+      if (fscanf(file, "%d", &capacity) == 0) { /* Continue... */
+      }
       fclose(file);
     }
   } else {
@@ -78,14 +78,13 @@ static bool has_capacity_field(char *name)
   return capacity >= 0;
 }
 
-static bool is_battery(char *name)
-{
+static bool is_battery(char *name) {
   return is_type_battery(name) && has_capacity_field(name);
 }
 
-int find_batteries(char ***battery_names)
-{
-  unsigned int path_len = strlen(POWER_SUPPLY_SUBSYSTEM) + POWER_SUPPLY_ATTR_LENGTH;
+int find_batteries(char ***battery_names) {
+  unsigned int path_len =
+      strlen(POWER_SUPPLY_SUBSYSTEM) + POWER_SUPPLY_ATTR_LENGTH;
   unsigned int entry_name_len = 5;
   int battery_count = 0;
   DIR *dir;
@@ -104,7 +103,8 @@ int find_batteries(char ***battery_names)
       }
 
       if (is_battery(entry->d_name)) {
-        *battery_names = realloc(*battery_names, sizeof(char *) * (battery_count+1));
+        *battery_names =
+            realloc(*battery_names, sizeof(char *) * (battery_count + 1));
         if (*battery_names == NULL)
           err(EXIT_FAILURE, "Memory allocation failed");
         (*battery_names)[battery_count] = strdup(entry->d_name);
@@ -128,15 +128,16 @@ void *watch_for_file_changes(void *battery) {
   struct BatteryStateWrapper *bat = battery;
   char buf[INOTIFY_BUF_SIZE];
   while (bat->battery->watching) {
-    // blocks here, until the watched file changes or a signal is send to the thread
+    // blocks here, until the watched file changes or a signal is send to the
+    // thread
     printf("Waiting for filechange\n");
-    int len = read(bat->battery->watch_fds[bat->bat_id],&buf,sizeof(buf));
+    int len = read(bat->battery->inotify_fd, &buf, sizeof(buf));
 
     // error while reading -> signal was send to stop or IO-Error
-    if (len==-1) {
-          perror("Unexpected Error in inotify thread");
-          printf("Thread stopped\n");
-          return NULL;
+    if (len == -1) {
+      perror("Unexpected Error in inotify thread");
+      printf("Thread stopped\n");
+      return NULL;
     }
 
     // file changed, update request with conditional variable
@@ -170,7 +171,7 @@ BatteryState *init_batteries(char **battery_names, int battery_count) {
   *battery->watching = ATOMIC_VAR_INIT(true);
 
   // init inotify-fd for notification on battery charging state changes
-  battery->inotify_fd = inotify_init1(IN_NONBLOCK);
+  battery->inotify_fd = inotify_init();
   if (battery->inotify_fd == -1) {
     perror("Error on initialising inotify");
     return battery;
@@ -180,7 +181,6 @@ BatteryState *init_batteries(char **battery_names, int battery_count) {
     perror("Error while creating memory for inotify watch fds");
     return battery;
   }
-
 
   battery->thread_ids = calloc(battery->count, sizeof(*battery->thread_ids));
   if (battery->thread_ids == NULL) {
@@ -192,13 +192,14 @@ BatteryState *init_batteries(char **battery_names, int battery_count) {
   for (int i = 0; i < battery->count; i++) {
     sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/status", battery->names[i]);
     battery->watch_fds[i] =
-        inotify_add_watch(battery->inotify_fd, attr_path, IN_MODIFY);
+        inotify_add_watch(battery->inotify_fd, attr_path, IN_MODIFY | IN_ACCESS);
     if (battery->watch_fds[i] == -1) {
       fprintf(stderr, "Cannot watch '%s': %s\n", attr_path, strerror(errno));
       continue;
     }
 
-    struct BatteryStateWrapper *b_state = calloc(1, sizeof(struct BatteryStateWrapper));
+    struct BatteryStateWrapper *b_state =
+        calloc(1, sizeof(struct BatteryStateWrapper));
     if (b_state == NULL) {
       perror("Error while creating memory for battery-state wrapper");
       continue;
@@ -219,10 +220,10 @@ BatteryState *init_batteries(char **battery_names, int battery_count) {
 
 void uninit_batteries(BatteryState *battery) {
   if (battery->inotify_fd != -1) {
-    //stopping threads
+    // stopping threads
     battery->watching = false;
-    if (battery->thread_ids!=NULL) {
-      for (int i = 0; i<battery->count; i++) {
+    if (battery->thread_ids != NULL) {
+      for (int i = 0; i < battery->count; i++) {
         pthread_cancel(battery->thread_ids[i]);
         pthread_join(battery->thread_ids[i], NULL);
       }
@@ -242,9 +243,9 @@ void uninit_batteries(BatteryState *battery) {
   }
 }
 
-int validate_batteries(char **battery_names, int battery_count)
-{
-  unsigned int path_len = strlen(POWER_SUPPLY_SUBSYSTEM) + POWER_SUPPLY_ATTR_LENGTH;
+int validate_batteries(char **battery_names, int battery_count) {
+  unsigned int path_len =
+      strlen(POWER_SUPPLY_SUBSYSTEM) + POWER_SUPPLY_ATTR_LENGTH;
   unsigned int name_len = 5;
   int return_value = -1;
 
@@ -265,8 +266,7 @@ int validate_batteries(char **battery_names, int battery_count)
 }
 
 void wait_for_update_battery_state(BatteryState *battery, bool required,
-                                   struct timespec timeout)
-{
+                                   struct timespec timeout) {
   char state[15];
   char *now_attribute;
   char *full_attribute;
@@ -281,12 +281,14 @@ void wait_for_update_battery_state(BatteryState *battery, bool required,
   battery->energy_full = 0;
   set_attributes(battery->names[0], &now_attribute, &full_attribute);
 
-  //wait for changes on the state files or for timeout
+  // wait for changes on the state files or for timeout
   clock_gettime(CLOCK_REALTIME, &ts);
   ts.tv_sec += timeout.tv_sec;
   ts.tv_nsec += timeout.tv_nsec;
   pthread_mutex_lock(battery->state_change_mut);
-  pthread_cond_timedwait(battery->bat_state_change, battery->state_change_mut, &ts);
+  int success = pthread_cond_timedwait(battery->bat_state_change,
+                                       battery->state_change_mut, &ts);
+  printf("Timed out waiting: %d\n", (success == 0));
   pthread_mutex_unlock(battery->state_change_mut);
 
   /* iterate through all batteries */
@@ -306,7 +308,8 @@ void wait_for_update_battery_state(BatteryState *battery, bool required,
     battery->discharging |= strcmp(state, POWER_SUPPLY_DISCHARGING) == 0;
     battery->full &= strcmp(state, POWER_SUPPLY_FULL) == 0;
 
-    sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/%s", battery->names[i], now_attribute);
+    sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/%s", battery->names[i],
+            now_attribute);
     file = fopen(attr_path, "r");
     if (file == NULL || fscanf(file, "%u", &tmp_now) == 0) {
       if (required)
@@ -318,7 +321,8 @@ void wait_for_update_battery_state(BatteryState *battery, bool required,
     fclose(file);
 
     if (full_attribute != NULL) {
-      sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/%s", battery->names[i], full_attribute);
+      sprintf(attr_path, POWER_SUPPLY_SUBSYSTEM "/%s/%s", battery->names[i],
+              full_attribute);
       file = fopen(attr_path, "r");
       if (file == NULL || fscanf(file, "%u", &tmp_full) == 0) {
         if (required)
