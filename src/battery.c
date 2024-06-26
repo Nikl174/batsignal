@@ -130,7 +130,6 @@ void *watch_for_file_changes(void *battery) {
   while (bat->battery->watching) {
     // blocks here, until the watched file changes or a signal is send to the
     // thread
-    printf("Waiting for filechange\n");
     int len = read(bat->battery->inotify_fd, &buf, sizeof(buf));
 
     // error while reading -> signal was send to stop or IO-Error
@@ -286,9 +285,8 @@ void wait_for_update_battery_state(BatteryState *battery, bool required,
   ts.tv_sec += timeout.tv_sec;
   ts.tv_nsec += timeout.tv_nsec;
   pthread_mutex_lock(battery->state_change_mut);
-  int success = pthread_cond_timedwait(battery->bat_state_change,
+  pthread_cond_timedwait(battery->bat_state_change,
                                        battery->state_change_mut, &ts);
-  printf("Timed out waiting: %d\n", (success == 0));
   pthread_mutex_unlock(battery->state_change_mut);
 
   /* iterate through all batteries */
